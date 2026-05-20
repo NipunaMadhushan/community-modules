@@ -1,17 +1,68 @@
 -- Parse key="value" and key=value pairs from a Ballerina logfmt line.
 -- Field names may contain dots and hyphens (e.g. http.status_code_group).
+--
+-- A character-by-character parser is used instead of gmatch patterns because
+-- Ballerina's logfmt encoder escapes special characters inside quoted values
+-- (e.g. \" for a literal double-quote, \\ for a literal backslash). The
+-- previous regex pattern [^"]* stopped at the first " regardless of whether
+-- it was preceded by a backslash, silently truncating any value that contained
+-- an escaped quote.
 local function parse_logfmt(line)
     local fields = {}
-    -- Quoted values first so they take priority over unquoted matches.
-    for k, v in line:gmatch('([%w%.%-%_]+)="([^"]*)"') do
-        fields[k] = v
-    end
-    -- Unquoted values (end at first whitespace character).
-    for k, v in line:gmatch('([%w%.%-%_]+)=([^%s"]+)') do
-        if not fields[k] then
-            fields[k] = v
+    local pos    = 1
+    local len    = #line
+
+    while pos <= len do
+        -- Skip whitespace between pairs.
+        while pos <= len and line:sub(pos, pos) == " " do
+            pos = pos + 1
+        end
+        if pos > len then break end
+
+        -- Read key name (up to '=' or whitespace).
+        local key_start = pos
+        while pos <= len and line:sub(pos, pos) ~= "=" and line:sub(pos, pos) ~= " " do
+            pos = pos + 1
+        end
+        local key = line:sub(key_start, pos - 1)
+        if key == "" then break end
+
+        if pos > len or line:sub(pos, pos) ~= "=" then
+            fields[key] = ""
+        else
+            pos = pos + 1  -- consume '='
+            if pos <= len and line:sub(pos, pos) == '"' then
+                -- Quoted value: walk character by character so that escape
+                -- sequences (\" and \\) inside the value are handled correctly.
+                pos = pos + 1  -- consume opening '"'
+                local parts = {}
+                while pos <= len do
+                    local c = line:sub(pos, pos)
+                    if c == "\\" and pos < len then
+                        local nc = line:sub(pos + 1, pos + 1)
+                        -- Unescape \" -> " and \\ -> \; keep other sequences as-is.
+                        parts[#parts + 1] = (nc == '"' or nc == "\\") and nc or (c .. nc)
+                        pos = pos + 2
+                    elseif c == '"' then
+                        pos = pos + 1  -- consume closing '"'
+                        break
+                    else
+                        parts[#parts + 1] = c
+                        pos = pos + 1
+                    end
+                end
+                fields[key] = table.concat(parts)
+            else
+                -- Unquoted value: read until the next whitespace.
+                local val_start = pos
+                while pos <= len and line:sub(pos, pos) ~= " " do
+                    pos = pos + 1
+                end
+                fields[key] = line:sub(val_start, pos - 1)
+            end
         end
     end
+
     return fields
 end
 
@@ -56,13 +107,16 @@ function transform(tag, timestamp, record)
 
     -- request.uri / request.verb: fall back to function-level identifiers when
     -- HTTP fields are absent (e.g. FTP client calls, event handler invocations).
+    -- Use the protocol field from the log line (e.g. "http") rather than
+    -- hardcoding "https", and apply it consistently to both URI forms.
+    local protocol = f["protocol"] or "http"
     local req_uri
     if url and url ~= "" then
-        req_uri = "https://" .. (f["src.object.name"] or "service") .. url
+        req_uri = protocol .. "://" .. (f["src.object.name"] or "service") .. url
     else
         local svc = f["entrypoint.service.name"] or f["src.object.name"] or "service"
         local fn  = f["src.function.name"] or "invoke"
-        req_uri   = svc .. "/" .. fn
+        req_uri   = protocol .. "://" .. svc .. "/" .. fn
     end
 
     local req_verb = method or f["src.function.name"] or "INVOKE"
@@ -75,7 +129,7 @@ function transform(tag, timestamp, record)
         if not EXCLUDE[k] and v ~= "" then
             local norm = k:gsub("[%.%-]", "_")
             if k == "response_time_seconds" then
-                metadata[norm] = tonumber(v)
+                metadata[norm] = tonumber(v) or 0
             else
                 metadata[norm] = v
             end

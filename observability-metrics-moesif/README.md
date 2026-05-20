@@ -61,17 +61,36 @@ metadata:
 
 ## Installation
 
-### Step 1 — Create a Kubernetes Secret for the master key (recommended)
+### Step 1 — Store the master key in a Kubernetes Secret (recommended)
+
+The Helm chart creates its own Secret (`moesif-master-key`) that holds the
+full Fluent Bit pipeline config. This step stores just the raw key value in a
+separate Secret so you can retrieve it at install time without hardcoding it
+in shell history.
 
 ```bash
-kubectl create secret generic moesif-master-key-values \
+kubectl create secret generic moesif-master-key \
   --from-literal=masterKey="<YOUR_MASTER_KEY>" \
-  --namespace openchoreo-observability-plane
+  --namespace openchoreo-observability-plane \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-You can then reference the secret value at install time with
-`--set moesif.masterKey="$(kubectl get secret ...)"`, or supply it directly
-via `--set` (see Step 2).
+You can then read it back and pass it to `helm upgrade --install`:
+
+```bash
+helm upgrade --install observability-metrics-moesif \
+  ./observability-metrics-moesif/helm \
+  --create-namespace \
+  --namespace openchoreo-observability-plane \
+  --set moesif.masterKey="$(kubectl get secret moesif-master-key \
+    -n openchoreo-observability-plane \
+    -o jsonpath='{.data.masterKey}' | base64 -d)" \
+  --set moesif.orgId="<YOUR_ORG_ID>" \
+  --set moesif.appId="<YOUR_APP_ID>"
+```
+
+Or supply the key directly via `--set` without a pre-created Secret (see
+Step 2).
 
 ### Step 2 — Install the Helm chart
 
@@ -166,7 +185,7 @@ kubectl -n openchoreo-observability-plane logs -f ds/fluent-bit
 
 A healthy pipeline shows:
 
-```
+```text
 [info] [filter:kubernetes:kubernetes.0] connectivity OK
 [info] [input:emitter:moesif_emitter] initializing
 [info] [output:http:http.1] api.moesif.net:443, HTTP status=201
@@ -199,8 +218,14 @@ that pod's records and they will be silently dropped by the `null` output.
 ### Enable debug logging
 
 Set `log_level: debug` in the Fluent Bit service config to see detailed
-record processing. Edit the `moesif-master-key` Secret's `fluent-bit.yaml`
-key and restart the DaemonSet:
+record processing. The full pipeline config lives in the `moesif-master-key`
+Secret (created by `helm install`) under the `fluent-bit.yaml` key. Edit it
+and restart the DaemonSet:
+
+```bash
+kubectl edit secret moesif-master-key \
+  -n openchoreo-observability-plane
+```
 
 ```bash
 kubectl rollout restart daemonset/fluent-bit \

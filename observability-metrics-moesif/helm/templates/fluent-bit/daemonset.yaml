@@ -27,6 +27,12 @@ spec:
       containers:
         - name: fluent-bit
           image: "{{ .Values.fluentBit.image.repository }}:{{ .Values.fluentBit.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           # Explicitly use the YAML config path. The default entrypoint uses
           # fluent-bit.conf (classic format). YAML format is required because
           # '#' in the master key would be treated as a comment in classic

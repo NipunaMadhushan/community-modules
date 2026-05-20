@@ -7,7 +7,7 @@ namespace: openchoreo-observability-plane
 fluentBit:
   image:
     repository: fluent/fluent-bit
-    tag: latest
+    tag: 5.0.5
   resources:
     limits:
       memory: 200Mi
@@ -21,9 +21,8 @@ moesif:
   masterKey: ""
 
   # Numeric org and app IDs sent as X-Moesif-Org-Id / X-Moesif-App-Id headers.
-  # These are cluster-level defaults; individual pods override them via the
-  # moesif-app-id annotation, which Fluent Bit uses dynamically for the
-  # X-Moesif-Application-Id collector authentication header.
+  # Included alongside X-Api-Token so the pipeline is ready when Moesif adds
+  # master-key support to the /v1/actions/batch endpoint.
   orgId: ""
   appId: ""
 
